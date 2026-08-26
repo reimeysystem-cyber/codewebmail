@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SafeShare P2P - Secure Direct File Transfer</title>
+  <title>BOX MAIL - Direct File Transfer</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -87,15 +87,15 @@
   </div>
 
   <!-- Top Header -->
-  <header class="w-full border-b border-slate-800 bg-slate-900/80 backdrop-filter blur-md sticky top-0 z-50">
+  <header class="w-full border-b border-slate-800 bg-slate-900/90 backdrop-blur-md sticky top-0 z-50">
     <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
       <div class="flex items-center gap-3">
         <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-brand-600 to-indigo-400 flex items-center justify-center text-white shadow-lg shadow-brand-500/30">
-          <i class="fa-solid font-bold fa-share-nodes text-xl"></i>
+          <i class="fa-solid font-bold fa-box-archive text-xl"></i>
         </div>
         <div>
           <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
-            SafeShare P2P
+            BOX MAIL
             <span class="text-xs font-normal px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
               E2E Direct
@@ -275,7 +275,7 @@
 
   <script>
     /*
-     * SafeShare P2P Core Logic
+     * BOX MAIL Core Logic
      * PeerJS & Direct WebRTC Chunk Transfer Implementation with Sandbox Fallback
      */
 
@@ -338,7 +338,7 @@
     });
 
     function checkPasscodeAuth() {
-      const savedAuth = sessionStorage.getItem('safeshare_auth');
+      const savedAuth = sessionStorage.getItem('boxmail_auth');
       if (savedAuth === 'true') {
         unlockApp();
       } else {
@@ -348,7 +348,7 @@
 
     function unlockApp() {
       isAuthorized = true;
-      sessionStorage.setItem('safeshare_auth', 'true');
+      sessionStorage.setItem('boxmail_auth', 'true');
       const overlay = document.getElementById('passcode-overlay');
       if (overlay) overlay.classList.add('hidden');
       
@@ -457,7 +457,7 @@
 
       // Initialize BroadcastChannel for multi-tab testing in preview
       try {
-        broadcastChannel = new BroadcastChannel('safeshare-preview-channel');
+        broadcastChannel = new BroadcastChannel('boxmail-preview-channel');
         broadcastChannel.onmessage = (event) => {
           const data = event.data;
           if (data && data.senderId !== demoId) {
