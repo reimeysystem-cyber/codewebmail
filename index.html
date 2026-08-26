@@ -383,16 +383,21 @@
         if (!peer || !peer.id) {
           enableDemoFallbackMode("プレビュー環境用デモモード（通信制限回避）");
         }
-      }, 2500);
+      }, 3500);
 
       try {
-        // Create Peer object with public PeerJS server
+        // Create Peer object with public PeerJS server & multiple STUN servers for robust 4G/WiFi WebRTC connection
         peer = new Peer({
           debug: 1,
           config: {
             iceServers: [
               { urls: 'stun:stun.l.google.com:19302' },
-              { urls: 'stun:stun1.l.google.com:19302' }
+              { urls: 'stun:stun1.l.google.com:19302' },
+              { urls: 'stun:stun2.l.google.com:19302' },
+              { urls: 'stun:stun3.l.google.com:19302' },
+              { urls: 'stun:stun4.l.google.com:19302' },
+              { urls: 'stun:stun.cloudflare.com:3478' },
+              { urls: 'stun:global.stun.twilio.com:3478' }
             ]
           }
         });
@@ -414,13 +419,17 @@
         });
 
         peer.on('error', (err) => {
-          console.warn('PeerJS error encountered, fallback to demo mode:', err);
+          console.warn('PeerJS error encountered:', err);
           clearTimeout(peerTimeout);
-          enableDemoFallbackMode("デモモード (プレビュー用)");
+          if (err.type === 'peer-unavailable') {
+            showToast('接続先のPCが見つかりません。PC画面が開いているか確認してください。', 'error');
+          } else if (!isDemoMode && (!peer || !peer.id)) {
+            enableDemoFallbackMode("デモモード (通信制限自動回避)");
+          }
         });
 
         peer.on('disconnected', () => {
-          if (!isDemoMode) {
+          if (!isDemoMode && peer) {
             statusIcon.className = "fa-solid fa-circle-exclamation text-amber-500 animate-pulse";
             statusText.textContent = "再接続中...";
             peer.reconnect();
@@ -479,13 +488,25 @@
       const urlParams = new URLSearchParams(window.location.search);
       const roomId = urlParams.get('room');
       if (roomId) {
-        // Wait for own peer to open first
+        showToast(`QRコードの接続情報 (${roomId}) を検出しました。接続中...`, 'info');
+        
+        let attempts = 0;
+        const maxAttempts = 20; // Try for 10 seconds
+
         const checkInterval = setInterval(() => {
+          attempts++;
           if (peer && peer.open) {
             clearInterval(checkInterval);
             connectToPeer(roomId);
+          } else if (isDemoMode) {
+            clearInterval(checkInterval);
+            connectToPeer(roomId);
+          } else if (attempts >= maxAttempts) {
+            clearInterval(checkInterval);
+            showToast('接続タイムアウト: 相手のPC画面が開いているか確認して「接続」を押してください', 'error');
+            if (targetPeerInput) targetPeerInput.value = roomId;
           }
-        }, 300);
+        }, 500);
       }
     }
 
@@ -506,7 +527,7 @@
     function connectToPeer(targetId) {
       const currentMyId = peer ? peer.id : peerIdDisplay.textContent;
       if (!targetId || targetId === currentMyId) {
-        showToast('無効なPeer IDです', 'error');
+        showToast('無効なIDです（自分自身には接続できません）', 'error');
         return;
       }
 
@@ -526,96 +547,28 @@
         return;
       }
 
-      showToast('相手の端末に接続中...', 'info');
-      const conn = peer.connect(targetId, {
-        reliable: true
-      });
+      showToast(`PC (${targetId}) に接続中...`, 'info');
 
-      handleIncomingConnection(conn);
-    }
+      try {
+        const conn = peer.connect(targetId, {
+          reliable: true
+        });
 
-    function handleIncomingConnection(conn) {
-      // Pending transfer state for receiving chunks
-      let incomingFile = {
-        meta: null,
-        chunks: [],
-        receivedSize: 0,
-        startTime: 0
-      };
-
-      conn.on('open', () => {
-        activeConnections[conn.peer] = conn;
-        updateConnectedStatus();
-        showToast('端末がペアリングされました！', 'success');
-
-        statusIcon.className = "fa-solid fa-circle-check text-emerald-400 animate-pulse";
-        statusText.textContent = "端末と接続済み";
-      });
-
-      conn.on('data', (data) => {
-        if (data.type === 'text') {
-          // Received Text Message
-          addTextToLog(data.content, 'received', conn.peer);
-          showToast('新しいテキストメッセージを受信しました', 'info');
-        } 
-        else if (data.type === 'file-start') {
-          // Initialize File Receipt
-          incomingFile.meta = data.meta;
-          incomingFile.chunks = [];
-          incomingFile.receivedSize = 0;
-          incomingFile.startTime = Date.now();
-          showProgressCard(`受信中: ${data.meta.name}`);
-        } 
-        else if (data.type === 'file-chunk') {
-          // Receive File Chunk
-          incomingFile.chunks.push(data.chunk);
-          incomingFile.receivedSize += data.chunk.byteLength;
-
-          // Update Progress
-          updateProgress(
-            incomingFile.receivedSize,
-            incomingFile.meta.size,
-            incomingFile.startTime
-          );
-
-          if (incomingFile.receivedSize >= incomingFile.meta.size) {
-            // File Complete
-            const fileBlob = new Blob(incomingFile.chunks, { type: incomingFile.meta.mimeType });
-            addFileToLog(fileBlob, incomingFile.meta.name, 'received');
-            hideProgressCard();
-            showToast(`ファイル "${incomingFile.meta.name}" を受領しました`, 'success');
-            
-            // Send acknowledgement back
-            conn.send({ type: 'file-ack', name: incomingFile.meta.name });
+        // Connection timeout safety check
+        const connTimeout = setTimeout(() => {
+          if (!activeConnections[targetId]) {
+            showToast('接続応答がありません。両方の端末がネットに繋がっているか確認してください。', 'error');
           }
-        }
-        else if (data.type === 'file-ack') {
-          showToast(`相手が "${data.name}" を正常に受信しました`, 'success');
-        }
-      });
+        }, 12000);
 
-      conn.on('close', () => {
-        delete activeConnections[conn.peer];
-        updateConnectedStatus();
-        showToast('端末との接続が切断されました', 'info');
-      });
+        conn.on('open', () => {
+          clearTimeout(connTimeout);
+        });
 
-      conn.on('error', (err) => {
-        console.error('Conn Error:', err);
-        showToast('通信エラーが発生しました', 'error');
-      });
-    }
-
-    function updateConnectedStatus() {
-      const count = Object.keys(activeConnections).length;
-      if (count > 0) {
-        connectedPeersCount.innerHTML = `<i class="fa-solid fa-link text-emerald-400 mr-1"></i> 接続済み (${count}台)`;
-        connectedPeersCount.className = "text-xs text-emerald-400 font-semibold";
-      } else {
-        connectedPeersCount.innerHTML = `<i class="fa-solid fa-user-xmark mr-1"></i> 未接続`;
-        connectedPeersCount.className = "text-xs text-slate-400";
-        statusIcon.className = "fa-solid fa-circle-check text-emerald-400";
-        statusText.textContent = "待機中 (接続準備OK)";
+        handleIncomingConnection(conn);
+      } catch (e) {
+        console.error('Connect failed:', e);
+        showToast('接続開始エラーが発生しました', 'error');
       }
     }
 
