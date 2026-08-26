@@ -276,7 +276,7 @@
   <script>
     /*
      * BOX MAIL Core Logic
-     * PeerJS & Direct WebRTC Chunk Transfer Implementation with Sandbox Fallback
+     * PeerJS & Direct WebRTC Chunk Transfer Implementation
      */
 
     // App State Variables
@@ -284,6 +284,7 @@
     let isAuthorized = false;
     let peer = null;
     let activeConnections = {}; // Stores peer ID -> DataConnection
+    let receivingFiles = {}; // Transfer tracker: transferId -> file state
     let qrcodeInstance = null;
     let isDemoMode = false;
     let broadcastChannel = null;
@@ -352,33 +353,28 @@
       const overlay = document.getElementById('passcode-overlay');
       if (overlay) overlay.classList.add('hidden');
       
-      // Initialize WebRTC P2P network after authorization
       initPeer();
       checkUrlParamsForAutoConnect();
     }
 
-    // Check if WebSocket connection is permitted in current environment (e.g., Canvas sandbox)
+    // Check if WebSocket connection is permitted in current environment
     function isWebSocketAllowed() {
       try {
         if (typeof WebSocket === 'undefined') return false;
-        // Test WebSocket instantiation safely
         const ws = new WebSocket('wss://0.peerjs.com/peerjs');
         ws.close();
         return true;
       } catch (e) {
-        // Intercept SecurityError when WebSockets are blocked in iframe/Canvas
         return false;
       }
     }
 
     function initPeer() {
-      // Check WebSocket permission before invoking PeerJS constructor to avoid SecurityError
       if (!isWebSocketAllowed()) {
         enableDemoFallbackMode("プレビュー環境 (Canvas通信制限回避)");
         return;
       }
 
-      // Setup timeout fallback for iframe/preview sandbox environments
       const peerTimeout = setTimeout(() => {
         if (!peer || !peer.id) {
           enableDemoFallbackMode("プレビュー環境用デモモード（通信制限回避）");
@@ -386,7 +382,6 @@
       }, 3500);
 
       try {
-        // Create Peer object with public PeerJS server & multiple STUN servers for robust 4G/WiFi WebRTC connection
         peer = new Peer({
           debug: 1,
           config: {
@@ -394,10 +389,7 @@
               { urls: 'stun:stun.l.google.com:19302' },
               { urls: 'stun:stun1.l.google.com:19302' },
               { urls: 'stun:stun2.l.google.com:19302' },
-              { urls: 'stun:stun3.l.google.com:19302' },
-              { urls: 'stun:stun4.l.google.com:19302' },
-              { urls: 'stun:stun.cloudflare.com:3478' },
-              { urls: 'stun:global.stun.twilio.com:3478' }
+              { urls: 'stun:stun.cloudflare.com:3478' }
             ]
           }
         });
@@ -408,7 +400,6 @@
           statusText.textContent = "待機中 (接続準備OK)";
           peerIdDisplay.textContent = id;
 
-          // Generate QR code with safe URL
           const connectUrl = getShareableUrl(id);
           generateQRCode(connectUrl);
           qrLoading.classList.add('hidden');
@@ -422,7 +413,7 @@
           console.warn('PeerJS error encountered:', err);
           clearTimeout(peerTimeout);
           if (err.type === 'peer-unavailable') {
-            showToast('接続先のPCが見つかりません。PC画面が開いているか確認してください。', 'error');
+            showToast('接続先のPCが見つかりません。画面が開いているか確認してください。', 'error');
           } else if (!isDemoMode && (!peer || !peer.id)) {
             enableDemoFallbackMode("デモモード (通信制限自動回避)");
           }
@@ -438,6 +429,76 @@
       } catch (e) {
         clearTimeout(peerTimeout);
         enableDemoFallbackMode("デモモード (エラー自動回避)");
+      }
+    }
+
+    function handleIncomingConnection(conn) {
+      conn.on('open', () => {
+        activeConnections[conn.peer] = conn;
+        updateConnectedPeersUI();
+        showToast('端末が相互に接続されました！', 'success');
+      });
+
+      conn.on('data', (data) => {
+        handleIncomingData(data, conn);
+      });
+
+      conn.on('close', () => {
+        delete activeConnections[conn.peer];
+        updateConnectedPeersUI();
+        showToast('端末との接続が切断されました', 'info');
+      });
+
+      conn.on('error', (err) => {
+        console.error('DataConnection error:', err);
+      });
+    }
+
+    function handleIncomingData(data, conn) {
+      if (data.type === 'text') {
+        addTextToLog(data.content, 'received');
+        showToast('テキストを受信しました！', 'success');
+      } else if (data.type === 'file-start') {
+        const transferId = data.meta.id || conn.peer;
+        receivingFiles[transferId] = {
+          name: data.meta.name,
+          size: data.meta.size,
+          mimeType: data.meta.mimeType,
+          chunks: [],
+          receivedSize: 0,
+          startTime: Date.now()
+        };
+        showProgressCard(`受信中: ${data.meta.name}`);
+      } else if (data.type === 'file-chunk') {
+        const transferId = data.meta?.id || conn.peer;
+        const transfer = receivingFiles[transferId];
+        if (transfer) {
+          transfer.chunks.push(data.chunk);
+          transfer.receivedSize += data.chunk.byteLength;
+          updateProgress(transfer.receivedSize, transfer.size, transfer.startTime);
+
+          if (transfer.receivedSize >= transfer.size) {
+            const fileBlob = new Blob(transfer.chunks, { type: transfer.mimeType });
+            addFileToLog(fileBlob, transfer.name, 'received');
+            hideProgressCard();
+            showToast(`"${transfer.name}" を受信しました！`, 'success');
+            delete receivingFiles[transferId];
+          }
+        }
+      }
+    }
+
+    function updateConnectedPeersUI() {
+      const count = Object.keys(activeConnections).length;
+      if (count > 0) {
+        connectedPeersCount.innerHTML = `<i class="fa-solid fa-circle-check text-emerald-400 mr-1"></i> ${count}台の端末と接続中`;
+        connectedPeersCount.className = "text-xs text-emerald-300 font-semibold";
+      } else if (isDemoMode) {
+        connectedPeersCount.innerHTML = `<i class="fa-solid fa-flask text-indigo-400 mr-1"></i> プレビュー動作中`;
+        connectedPeersCount.className = "text-xs text-indigo-300 font-semibold";
+      } else {
+        connectedPeersCount.innerHTML = `<i class="fa-solid fa-user-xmark mr-1"></i> 未接続`;
+        connectedPeersCount.className = "text-xs text-slate-400";
       }
     }
 
@@ -459,19 +520,16 @@
       const canvasNotice = document.getElementById('canvas-env-notice');
       if (canvasNotice) canvasNotice.classList.remove('hidden');
 
-      connectedPeersCount.innerHTML = `<i class="fa-solid fa-circle-check text-indigo-400 mr-1"></i> プレビュー接続中`;
-      connectedPeersCount.className = "text-xs text-indigo-300 font-semibold";
-
+      updateConnectedPeersUI();
       showToast('プレビュー環境のためデモモードに切り替えました', 'info');
 
-      // Initialize BroadcastChannel for multi-tab testing in preview
       try {
         broadcastChannel = new BroadcastChannel('boxmail-preview-channel');
         broadcastChannel.onmessage = (event) => {
           const data = event.data;
           if (data && data.senderId !== demoId) {
             if (data.type === 'text') {
-              addTextToLog(data.content, 'received', data.senderId);
+              addTextToLog(data.content, 'received');
               showToast('テキストを受信しました！', 'info');
             } else if (data.type === 'demo-file') {
               simulateFileReceive(data.fileName, data.fileSize);
@@ -483,7 +541,6 @@
       }
     }
 
-    // Auto connect if room param exists in URL
     function checkUrlParamsForAutoConnect() {
       const urlParams = new URLSearchParams(window.location.search);
       const roomId = urlParams.get('room');
@@ -491,8 +548,6 @@
         showToast(`QRコードの接続情報 (${roomId}) を検出しました。接続中...`, 'info');
         
         let attempts = 0;
-        const maxAttempts = 20; // Try for 10 seconds
-
         const checkInterval = setInterval(() => {
           attempts++;
           if (peer && peer.open) {
@@ -501,16 +556,14 @@
           } else if (isDemoMode) {
             clearInterval(checkInterval);
             connectToPeer(roomId);
-          } else if (attempts >= maxAttempts) {
+          } else if (attempts >= 20) {
             clearInterval(checkInterval);
-            showToast('接続タイムアウト: 相手のPC画面が開いているか確認して「接続」を押してください', 'error');
             if (targetPeerInput) targetPeerInput.value = roomId;
           }
         }, 500);
       }
     }
 
-    // Generate QR Code
     function generateQRCode(url) {
       const container = document.getElementById('qrcode');
       container.innerHTML = '';
@@ -532,13 +585,12 @@
       }
 
       if (isDemoMode) {
-        showToast(`デモモード: ${targetId} への接続シミュレーション完了`, 'info');
-        connectedPeersCount.innerHTML = `<i class="fa-solid fa-circle-check text-indigo-400 mr-1"></i> プレビュー接続中 (${targetId})`;
+        showToast(`デモモード: ${targetId} への接続完了`, 'info');
         return;
       }
 
-      if (!peer) {
-        showToast('通信ユニットが初期化されていません', 'error');
+      if (!peer || !peer.open) {
+        showToast('通信ユニットの初期化を待っています...', 'info');
         return;
       }
 
@@ -554,21 +606,10 @@
           reliable: true
         });
 
-        // Connection timeout safety check
-        const connTimeout = setTimeout(() => {
-          if (!activeConnections[targetId]) {
-            showToast('接続応答がありません。両方の端末がネットに繋がっているか確認してください。', 'error');
-          }
-        }, 12000);
-
-        conn.on('open', () => {
-          clearTimeout(connTimeout);
-        });
-
         handleIncomingConnection(conn);
       } catch (e) {
         console.error('Connect failed:', e);
-        showToast('接続開始エラーが発生しました', 'error');
+        showToast('接続処理中にエラーが発生しました', 'error');
       }
     }
 
@@ -576,7 +617,6 @@
       const connections = Object.values(activeConnections);
 
       if (isDemoMode) {
-        // In Demo Mode: simulate transfer UX for all selected files
         Array.from(files).forEach(file => {
           simulateFileSend(file);
         });
@@ -595,79 +635,34 @@
       });
     }
 
-    async function simulateFileSend(file) {
-      showProgressCard(`送信中 (デモ): ${file.name}`);
-      const startTime = Date.now();
-      let offset = 0;
-      const total = file.size;
-      const step = Math.max(CHUNK_SIZE, Math.floor(total / 20));
-
-      while (offset < total) {
-        offset = Math.min(total, offset + step);
-        updateProgress(offset, total, startTime);
-        await new Promise(r => setTimeout(r, 60));
-      }
-
-      hideProgressCard();
-      addFileToLog(file, file.name, 'sent');
-      showToast(`"${file.name}" の送信動作テスト完了！`, 'success');
-
-      if (broadcastChannel) {
-        broadcastChannel.postMessage({
-          type: 'demo-file',
-          fileName: file.name,
-          fileSize: file.size,
-          senderId: peerIdDisplay.textContent
-        });
-      }
-    }
-
-    async function simulateFileReceive(fileName = "Sample_Image.jpg", fileSize = 2450000) {
-      showProgressCard(`受信中 (デモ): ${fileName}`);
-      const startTime = Date.now();
-      let offset = 0;
-      const step = Math.max(CHUNK_SIZE, Math.floor(fileSize / 20));
-
-      while (offset < fileSize) {
-        offset = Math.min(fileSize, offset + step);
-        updateProgress(offset, fileSize, startTime);
-        await new Promise(r => setTimeout(r, 60));
-      }
-
-      const dummyBlob = new Blob(["Demo File Content"], { type: "text/plain" });
-      hideProgressCard();
-      addFileToLog(dummyBlob, fileName, 'received');
-      showToast(`ファイル "${fileName}" の受信テスト完了！`, 'success');
-    }
-
     async function sendFileToConnection(file, conn) {
+      const transferId = 'tr_' + Math.random().toString(36).substr(2, 9);
       const meta = {
+        id: transferId,
         name: file.name,
         size: file.size,
         mimeType: file.type || 'application/octet-stream'
       };
 
-      // Notify recipient file transfer starting
       conn.send({ type: 'file-start', meta: meta });
 
       showProgressCard(`送信中: ${file.name}`);
       const startTime = Date.now();
       let offset = 0;
 
-      // Read file in ArrayBuffer chunks
       while (offset < file.size) {
         const slice = file.slice(offset, offset + CHUNK_SIZE);
         const buffer = await slice.arrayBuffer();
 
         conn.send({
           type: 'file-chunk',
+          meta: { id: transferId },
           chunk: buffer
         });
 
         offset += buffer.byteLength;
         updateProgress(offset, file.size, startTime);
 
-        // Yield to browser event loop to avoid UI freeze & buffer overflow
         if (offset % (CHUNK_SIZE * 8) === 0) {
           await new Promise(r => setTimeout(r, 10));
         }
