@@ -1,0 +1,1044 @@
+<!DOCTYPE html>
+<html lang="ja" class="h-full bg-slate-900 text-slate-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SafeShare P2P - Secure Direct File Transfer</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- PeerJS (WebRTC Wrapper) -->
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <!-- QRCode.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              100: '#e0e7ff',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.6);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(99, 102, 241, 0.5);
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(99, 102, 241, 0.8);
+    }
+    
+    .glass-card {
+      background: rgba(30, 41, 59, 0.7);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    
+    .pulse-glow {
+      box-shadow: 0 0 25px rgba(99, 102, 241, 0.25);
+    }
+  </style>
+</head>
+<body class="h-full flex flex-col font-sans antialiased selection:bg-brand-500 selection:text-white">
+
+  <!-- Passcode Authentication Overlay -->
+  <div id="passcode-overlay" class="fixed inset-0 z-[100] bg-slate-950/90 backdrop-blur-xl flex items-center justify-center p-4">
+    <div class="glass-card max-w-md w-full p-8 rounded-3xl shadow-2xl text-center border border-slate-700/60 relative overflow-hidden">
+      <div class="w-16 h-16 rounded-2xl bg-gradient-to-tr from-brand-600 to-indigo-500 flex items-center justify-center mx-auto mb-4 text-2xl text-white shadow-lg shadow-brand-500/30">
+        <i class="fa-solid fa-lock"></i>
+      </div>
+      <h2 class="text-xl font-bold text-white mb-2">アクセス制限</h2>
+      <p class="text-xs text-slate-400 mb-6">このサービスを利用するには許可パスコードが必要です。</p>
+      
+      <form id="passcode-form" class="space-y-4" onsubmit="return false;">
+        <div>
+          <input type="password" id="passcode-input" placeholder="パスコードを入力" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-center text-white tracking-widest focus:outline-none focus:border-brand-500 font-mono transition">
+          <p id="passcode-error" class="text-rose-400 text-xs mt-2 hidden font-medium">
+            <i class="fa-solid fa-circle-exclamation mr-1"></i> パスコードが正しくありません
+          </p>
+        </div>
+        <button type="submit" id="btn-submit-passcode" class="w-full py-3 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-sm font-semibold transition shadow-lg shadow-brand-600/30 active:scale-95 flex items-center justify-center gap-2">
+          <i class="fa-solid fa-key"></i> 認証してサービスを開始
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Top Header -->
+  <header class="w-full border-b border-slate-800 bg-slate-900/80 backdrop-filter blur-md sticky top-0 z-50">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-brand-600 to-indigo-400 flex items-center justify-center text-white shadow-lg shadow-brand-500/30">
+          <i class="fa-solid font-bold fa-share-nodes text-xl"></i>
+        </div>
+        <div>
+          <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+            SafeShare P2P
+            <span class="text-xs font-normal px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              E2E Direct
+            </span>
+          </h1>
+          <p class="text-xs text-slate-400">サーバー経由なし・暗号化P2P転送</p>
+        </div>
+      </div>
+
+      <!-- Connection Badge -->
+      <div id="status-badge" class="px-3 py-1.5 rounded-full bg-slate-800 border border-slate-700 text-xs font-medium text-slate-400 flex items-center gap-2 transition-all">
+        <i class="fa-solid fa-circle-dot text-amber-500 animate-pulse" id="status-icon"></i>
+        <span id="status-text">ID生成中...</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 max-w-6xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+
+    <!-- LEFT / RECEIVE PANEL: Pairing & Target Info -->
+    <section class="lg:col-span-5 flex flex-col gap-6">
+      
+      <!-- Pairing Card -->
+      <div class="glass-card rounded-2xl p-6 shadow-xl flex flex-col items-center text-center">
+        <div class="inline-flex items-center gap-2 text-brand-400 text-xs font-semibold uppercase tracking-wider mb-2">
+          <i class="fa-solid fa-qrcode"></i> ワンタップ簡単接続
+        </div>
+        <h2 class="text-xl font-bold text-white mb-1">スマホからPCへ転送</h2>
+        <p class="text-xs text-slate-400 mb-5">カメラでQRコードを読み取るか、URLを共有してください。</p>
+
+        <!-- QR Code Container -->
+        <div class="relative group p-3 bg-white rounded-2xl shadow-2xl mb-4 transition-transform hover:scale-[1.02] duration-300">
+          <div id="qrcode" class="flex items-center justify-center w-48 h-48"></div>
+          <div id="qr-loading" class="absolute inset-0 bg-white/90 rounded-2xl flex flex-col items-center justify-center gap-2 text-slate-600">
+            <i class="fa-solid fa-spinner fa-spin text-2xl text-brand-600"></i>
+            <span class="text-xs font-medium">QRコード生成中</span>
+          </div>
+        </div>
+
+        <!-- Room Key Display & Copy -->
+        <div class="w-full bg-slate-900/80 rounded-xl p-3 border border-slate-800 flex items-center justify-between gap-2">
+          <div class="text-left overflow-hidden">
+            <div class="text-[10px] text-slate-500 uppercase font-semibold">Peer Connection ID</div>
+            <div id="peer-id-display" class="text-xs font-mono text-brand-300 truncate font-semibold">----------------</div>
+          </div>
+          <button id="btn-copy-link" title="接続URLをコピー" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition flex items-center gap-1.5 shrink-0 border border-slate-700 active:scale-95">
+            <i class="fa-regular fa-copy"></i>
+            <span>URLコピー</span>
+          </button>
+        </div>
+
+        <!-- Security Info Note -->
+        <div class="mt-4 p-3 bg-emerald-950/30 border border-emerald-800/40 rounded-xl text-left flex gap-3 items-start">
+          <i class="fa-solid fa-shield-halved text-emerald-400 text-base mt-0.5"></i>
+          <div class="text-xs text-emerald-300/90 leading-relaxed">
+            <strong class="font-semibold text-emerald-300">高セキュリティ仕様:</strong><br>
+            ファイルデータは中間サーバーに保存・送信されません。端末間で直接受け渡されるため情報漏洩がありません。
+          </div>
+        </div>
+
+        <!-- Canvas Environment Notice Banner -->
+        <div id="canvas-env-notice" class="mt-3 p-2.5 bg-indigo-950/40 border border-indigo-800/40 rounded-xl text-left hidden">
+          <div class="text-[11px] text-indigo-300 leading-relaxed flex items-start gap-2">
+            <i class="fa-solid fa-circle-info text-indigo-400 mt-0.5 shrink-0"></i>
+            <span><strong>プレビュー環境動作中:</strong> Canvas内はWebSocket通信が制限されているため安全なデモモードで動作中です。Web公開時（Vercel等）は自動的に暗号化P2P通信になります。</span>
+          </div>
+        </div>
+
+        <!-- Preview Mode Test Action -->
+        <div id="preview-demo-actions" class="mt-3 w-full hidden">
+          <button id="btn-simulate-receive" class="w-full py-2 bg-indigo-600/30 hover:bg-indigo-600/50 border border-indigo-500/40 text-indigo-200 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-2">
+            <i class="fa-solid fa-vial"></i> プレビュー用: 擬似ファイル受信テスト
+          </button>
+        </div>
+      </div>
+
+      <!-- Connect Manually Box (Option) -->
+      <div class="glass-card rounded-2xl p-5 shadow-xl">
+        <h3 class="text-sm font-semibold text-slate-200 mb-3 flex items-center gap-2">
+          <i class="fa-solid fa-link text-brand-400"></i> 手動で他の端末に接続
+        </h3>
+        <div class="flex gap-2">
+          <input type="text" id="target-peer-id" placeholder="相手のPeer IDを入力" class="flex-1 bg-slate-900/90 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-brand-500 font-mono">
+          <button id="btn-connect-peer" class="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-xs font-medium transition flex items-center gap-1.5 shadow-lg shadow-brand-600/20 active:scale-95">
+            <i class="fa-solid fa-plug"></i> 接続
+          </button>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- RIGHT / SEND & RECEIVE HUB -->
+    <section class="lg:col-span-7 flex flex-col gap-6">
+
+      <!-- Send Section -->
+      <div class="glass-card rounded-2xl p-6 shadow-xl relative overflow-hidden">
+        
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold text-white flex items-center gap-2">
+            <i class="fa-solid fa-paper-plane text-brand-400"></i> ファイル・テキスト送信
+          </h2>
+          <span class="text-xs text-slate-400" id="connected-peers-count"><i class="fa-solid fa-user-xmark mr-1"></i> 未接続</span>
+        </div>
+
+        <!-- Drag & Drop Zone -->
+        <div id="drop-zone" class="border-2 border-dashed border-slate-700 hover:border-brand-500/80 bg-slate-900/50 hover:bg-slate-900/80 rounded-2xl p-8 text-center cursor-pointer transition-all duration-200 group relative">
+          <input type="file" id="file-input" multiple class="hidden">
+          
+          <div class="flex flex-col items-center justify-center gap-3">
+            <div class="w-16 h-16 rounded-2xl bg-brand-500/10 text-brand-400 flex items-center justify-center text-2xl group-hover:scale-110 group-hover:bg-brand-500/20 transition-all duration-300">
+              <i class="fa-solid fa-cloud-arrow-up"></i>
+            </div>
+            <div>
+              <p class="text-sm font-semibold text-slate-200">ファイルをドロップ、または<span class="text-brand-400 underline decoration-brand-400/50">参照</span></p>
+              <p class="text-xs text-slate-400 mt-1">動画、画像、PDF、音楽など（容量無制限）</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Text / URL Share -->
+        <div class="mt-5 pt-5 border-t border-slate-800">
+          <label class="block text-xs font-medium text-slate-300 mb-2 flex items-center gap-1.5">
+            <i class="fa-solid fa-font text-slate-400"></i> テキスト・URL共有
+          </label>
+          <div class="flex gap-2">
+            <textarea id="text-input" rows="2" placeholder="URLやメモテキストを入力してPCへ送信..." class="flex-1 bg-slate-900/90 border border-slate-700 rounded-xl p-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-brand-500 resize-none"></textarea>
+            <button id="btn-send-text" class="px-4 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-xs font-semibold transition flex flex-col items-center justify-center gap-1 shadow-lg shadow-brand-600/20 shrink-0 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">
+              <i class="fa-solid fa-paper-plane text-sm"></i>
+              <span>送信</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Transfer Progress & History -->
+      <div class="glass-card rounded-2xl p-6 shadow-xl">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold text-white flex items-center gap-2">
+            <i class="fa-solid fa-clock-rotate-left text-brand-400"></i> 転送・受信履歴
+          </h2>
+          <button id="btn-clear-history" class="text-xs text-slate-400 hover:text-rose-400 transition flex items-center gap-1">
+            <i class="fa-solid fa-trash-can"></i> 履歴をクリア
+          </button>
+        </div>
+
+        <!-- Active Progress Bar (Hidden by default) -->
+        <div id="transfer-progress-card" class="hidden mb-4 p-4 rounded-xl bg-slate-900/80 border border-brand-500/30">
+          <div class="flex items-center justify-between text-xs font-medium mb-1.5">
+            <span id="progress-title" class="text-brand-300 truncate">転送中...</span>
+            <span id="progress-percent" class="text-brand-400 font-mono">0%</span>
+          </div>
+          <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+            <div id="progress-bar" class="h-full bg-gradient-to-r from-brand-600 to-emerald-400 transition-all duration-150 w-0"></div>
+          </div>
+          <div class="flex justify-between text-[10px] text-slate-400 mt-1 font-mono">
+            <span id="progress-speed">0 KB/s</span>
+            <span id="progress-transferred">0 / 0 MB</span>
+          </div>
+        </div>
+
+        <!-- Transfer Log List -->
+        <div id="transfer-list" class="space-y-3 max-h-80 overflow-y-auto pr-1">
+          <!-- Empty State Placeholder -->
+          <div id="empty-state" class="py-12 text-center text-slate-500">
+            <i class="fa-solid fa-inbox text-3xl mb-2 opacity-40"></i>
+            <p class="text-xs">受信・送信されたファイルやテキストがここに表示されます</p>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+  <script>
+    /*
+     * SafeShare P2P Core Logic
+     * PeerJS & Direct WebRTC Chunk Transfer Implementation with Sandbox Fallback
+     */
+
+    // App State Variables
+    const REQUIRED_PASSCODE = 'kyoka019203Dd2092';
+    let isAuthorized = false;
+    let peer = null;
+    let activeConnections = {}; // Stores peer ID -> DataConnection
+    let qrcodeInstance = null;
+    let isDemoMode = false;
+    let broadcastChannel = null;
+
+    // Helper: Safely generate room URL regardless of environment
+    function getShareableUrl(roomId) {
+      try {
+        const currentUrl = new URL(window.location.href);
+        currentUrl.searchParams.set('room', roomId);
+        return currentUrl.href;
+      } catch (e) {
+        const baseUrl = window.location.href.split('?')[0];
+        return `${baseUrl}?room=${roomId}`;
+      }
+    }
+
+    // Constants
+    const CHUNK_SIZE = 32 * 1024; // 32KB chunks for stable P2P data channel transfer
+
+    // DOM Elements
+    const statusBadge = document.getElementById('status-badge');
+    const statusIcon = document.getElementById('status-icon');
+    const statusText = document.getElementById('status-text');
+    const peerIdDisplay = document.getElementById('peer-id-display');
+    const qrLoading = document.getElementById('qr-loading');
+    const connectedPeersCount = document.getElementById('connected-peers-count');
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    const textInput = document.getElementById('text-input');
+    const btnSendText = document.getElementById('btn-send-text');
+    const btnCopyLink = document.getElementById('btn-copy-link');
+    const btnConnectPeer = document.getElementById('btn-connect-peer');
+    const targetPeerInput = document.getElementById('target-peer-id');
+    const transferList = document.getElementById('transfer-list');
+    const emptyState = document.getElementById('empty-state');
+    const btnClearHistory = document.getElementById('btn-clear-history');
+    const previewDemoActions = document.getElementById('preview-demo-actions');
+    const btnSimulateReceive = document.getElementById('btn-simulate-receive');
+
+    // Progress Elements
+    const progressCard = document.getElementById('transfer-progress-card');
+    const progressTitle = document.getElementById('progress-title');
+    const progressPercent = document.getElementById('progress-percent');
+    const progressBar = document.getElementById('progress-bar');
+    const progressSpeed = document.getElementById('progress-speed');
+    const progressTransferred = document.getElementById('progress-transferred');
+
+    // Initialize Application
+    window.addEventListener('DOMContentLoaded', () => {
+      checkPasscodeAuth();
+      setupEventListeners();
+    });
+
+    function checkPasscodeAuth() {
+      const savedAuth = sessionStorage.getItem('safeshare_auth');
+      if (savedAuth === 'true') {
+        unlockApp();
+      } else {
+        document.getElementById('passcode-overlay').classList.remove('hidden');
+      }
+    }
+
+    function unlockApp() {
+      isAuthorized = true;
+      sessionStorage.setItem('safeshare_auth', 'true');
+      const overlay = document.getElementById('passcode-overlay');
+      if (overlay) overlay.classList.add('hidden');
+      
+      // Initialize WebRTC P2P network after authorization
+      initPeer();
+      checkUrlParamsForAutoConnect();
+    }
+
+    // Check if WebSocket connection is permitted in current environment (e.g., Canvas sandbox)
+    function isWebSocketAllowed() {
+      try {
+        if (typeof WebSocket === 'undefined') return false;
+        // Test WebSocket instantiation safely
+        const ws = new WebSocket('wss://0.peerjs.com/peerjs');
+        ws.close();
+        return true;
+      } catch (e) {
+        // Intercept SecurityError when WebSockets are blocked in iframe/Canvas
+        return false;
+      }
+    }
+
+    function initPeer() {
+      // Check WebSocket permission before invoking PeerJS constructor to avoid SecurityError
+      if (!isWebSocketAllowed()) {
+        enableDemoFallbackMode("プレビュー環境 (Canvas通信制限回避)");
+        return;
+      }
+
+      // Setup timeout fallback for iframe/preview sandbox environments
+      const peerTimeout = setTimeout(() => {
+        if (!peer || !peer.id) {
+          enableDemoFallbackMode("プレビュー環境用デモモード（通信制限回避）");
+        }
+      }, 2500);
+
+      try {
+        // Create Peer object with public PeerJS server
+        peer = new Peer({
+          debug: 1,
+          config: {
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+          }
+        });
+
+        peer.on('open', (id) => {
+          clearTimeout(peerTimeout);
+          statusIcon.className = "fa-solid fa-circle-check text-emerald-400";
+          statusText.textContent = "待機中 (接続準備OK)";
+          peerIdDisplay.textContent = id;
+
+          // Generate QR code with safe URL
+          const connectUrl = getShareableUrl(id);
+          generateQRCode(connectUrl);
+          qrLoading.classList.add('hidden');
+        });
+
+        peer.on('connection', (conn) => {
+          handleIncomingConnection(conn);
+        });
+
+        peer.on('error', (err) => {
+          console.warn('PeerJS error encountered, fallback to demo mode:', err);
+          clearTimeout(peerTimeout);
+          enableDemoFallbackMode("デモモード (プレビュー用)");
+        });
+
+        peer.on('disconnected', () => {
+          if (!isDemoMode) {
+            statusIcon.className = "fa-solid fa-circle-exclamation text-amber-500 animate-pulse";
+            statusText.textContent = "再接続中...";
+            peer.reconnect();
+          }
+        });
+      } catch (e) {
+        clearTimeout(peerTimeout);
+        enableDemoFallbackMode("デモモード (エラー自動回避)");
+      }
+    }
+
+    function enableDemoFallbackMode(reason) {
+      if (isDemoMode) return;
+      isDemoMode = true;
+
+      const demoId = "DEMO-" + Math.floor(1000 + Math.random() * 9000);
+      statusIcon.className = "fa-solid fa-flask text-indigo-400";
+      statusText.textContent = "プレビュー動作中 (デモ)";
+      peerIdDisplay.textContent = demoId;
+
+      const connectUrl = getShareableUrl(demoId);
+      generateQRCode(connectUrl);
+      qrLoading.classList.add('hidden');
+
+      previewDemoActions.classList.remove('hidden');
+      
+      const canvasNotice = document.getElementById('canvas-env-notice');
+      if (canvasNotice) canvasNotice.classList.remove('hidden');
+
+      connectedPeersCount.innerHTML = `<i class="fa-solid fa-circle-check text-indigo-400 mr-1"></i> プレビュー接続中`;
+      connectedPeersCount.className = "text-xs text-indigo-300 font-semibold";
+
+      showToast('プレビュー環境のためデモモードに切り替えました', 'info');
+
+      // Initialize BroadcastChannel for multi-tab testing in preview
+      try {
+        broadcastChannel = new BroadcastChannel('safeshare-preview-channel');
+        broadcastChannel.onmessage = (event) => {
+          const data = event.data;
+          if (data && data.senderId !== demoId) {
+            if (data.type === 'text') {
+              addTextToLog(data.content, 'received', data.senderId);
+              showToast('テキストを受信しました！', 'info');
+            } else if (data.type === 'demo-file') {
+              simulateFileReceive(data.fileName, data.fileSize);
+            }
+          }
+        };
+      } catch (e) {
+        console.log('BroadcastChannel not supported');
+      }
+    }
+
+    // Auto connect if room param exists in URL
+    function checkUrlParamsForAutoConnect() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const roomId = urlParams.get('room');
+      if (roomId) {
+        // Wait for own peer to open first
+        const checkInterval = setInterval(() => {
+          if (peer && peer.open) {
+            clearInterval(checkInterval);
+            connectToPeer(roomId);
+          }
+        }, 300);
+      }
+    }
+
+    // Generate QR Code
+    function generateQRCode(url) {
+      const container = document.getElementById('qrcode');
+      container.innerHTML = '';
+      qrcodeInstance = new QRCode(container, {
+        text: url,
+        width: 180,
+        height: 180,
+        colorDark: "#0f172a",
+        colorLight: "#ffffff",
+        correctLevel: QRCode.CorrectLevel.M
+      });
+    }
+
+    function connectToPeer(targetId) {
+      const currentMyId = peer ? peer.id : peerIdDisplay.textContent;
+      if (!targetId || targetId === currentMyId) {
+        showToast('無効なPeer IDです', 'error');
+        return;
+      }
+
+      if (isDemoMode) {
+        showToast(`デモモード: ${targetId} への接続シミュレーション完了`, 'info');
+        connectedPeersCount.innerHTML = `<i class="fa-solid fa-circle-check text-indigo-400 mr-1"></i> プレビュー接続中 (${targetId})`;
+        return;
+      }
+
+      if (!peer) {
+        showToast('通信ユニットが初期化されていません', 'error');
+        return;
+      }
+
+      if (activeConnections[targetId]) {
+        showToast('すでに接続されています', 'info');
+        return;
+      }
+
+      showToast('相手の端末に接続中...', 'info');
+      const conn = peer.connect(targetId, {
+        reliable: true
+      });
+
+      handleIncomingConnection(conn);
+    }
+
+    function handleIncomingConnection(conn) {
+      // Pending transfer state for receiving chunks
+      let incomingFile = {
+        meta: null,
+        chunks: [],
+        receivedSize: 0,
+        startTime: 0
+      };
+
+      conn.on('open', () => {
+        activeConnections[conn.peer] = conn;
+        updateConnectedStatus();
+        showToast('端末がペアリングされました！', 'success');
+
+        statusIcon.className = "fa-solid fa-circle-check text-emerald-400 animate-pulse";
+        statusText.textContent = "端末と接続済み";
+      });
+
+      conn.on('data', (data) => {
+        if (data.type === 'text') {
+          // Received Text Message
+          addTextToLog(data.content, 'received', conn.peer);
+          showToast('新しいテキストメッセージを受信しました', 'info');
+        } 
+        else if (data.type === 'file-start') {
+          // Initialize File Receipt
+          incomingFile.meta = data.meta;
+          incomingFile.chunks = [];
+          incomingFile.receivedSize = 0;
+          incomingFile.startTime = Date.now();
+          showProgressCard(`受信中: ${data.meta.name}`);
+        } 
+        else if (data.type === 'file-chunk') {
+          // Receive File Chunk
+          incomingFile.chunks.push(data.chunk);
+          incomingFile.receivedSize += data.chunk.byteLength;
+
+          // Update Progress
+          updateProgress(
+            incomingFile.receivedSize,
+            incomingFile.meta.size,
+            incomingFile.startTime
+          );
+
+          if (incomingFile.receivedSize >= incomingFile.meta.size) {
+            // File Complete
+            const fileBlob = new Blob(incomingFile.chunks, { type: incomingFile.meta.mimeType });
+            addFileToLog(fileBlob, incomingFile.meta.name, 'received');
+            hideProgressCard();
+            showToast(`ファイル "${incomingFile.meta.name}" を受領しました`, 'success');
+            
+            // Send acknowledgement back
+            conn.send({ type: 'file-ack', name: incomingFile.meta.name });
+          }
+        }
+        else if (data.type === 'file-ack') {
+          showToast(`相手が "${data.name}" を正常に受信しました`, 'success');
+        }
+      });
+
+      conn.on('close', () => {
+        delete activeConnections[conn.peer];
+        updateConnectedStatus();
+        showToast('端末との接続が切断されました', 'info');
+      });
+
+      conn.on('error', (err) => {
+        console.error('Conn Error:', err);
+        showToast('通信エラーが発生しました', 'error');
+      });
+    }
+
+    function updateConnectedStatus() {
+      const count = Object.keys(activeConnections).length;
+      if (count > 0) {
+        connectedPeersCount.innerHTML = `<i class="fa-solid fa-link text-emerald-400 mr-1"></i> 接続済み (${count}台)`;
+        connectedPeersCount.className = "text-xs text-emerald-400 font-semibold";
+      } else {
+        connectedPeersCount.innerHTML = `<i class="fa-solid fa-user-xmark mr-1"></i> 未接続`;
+        connectedPeersCount.className = "text-xs text-slate-400";
+        statusIcon.className = "fa-solid fa-circle-check text-emerald-400";
+        statusText.textContent = "待機中 (接続準備OK)";
+      }
+    }
+
+    function sendFiles(files) {
+      const connections = Object.values(activeConnections);
+
+      if (isDemoMode) {
+        // In Demo Mode: simulate transfer UX for all selected files
+        Array.from(files).forEach(file => {
+          simulateFileSend(file);
+        });
+        return;
+      }
+
+      if (connections.length === 0) {
+        showToast('送信先端末が接続されていません。QRコードを読み取ってください。', 'error');
+        return;
+      }
+
+      Array.from(files).forEach(file => {
+        connections.forEach(conn => {
+          sendFileToConnection(file, conn);
+        });
+      });
+    }
+
+    async function simulateFileSend(file) {
+      showProgressCard(`送信中 (デモ): ${file.name}`);
+      const startTime = Date.now();
+      let offset = 0;
+      const total = file.size;
+      const step = Math.max(CHUNK_SIZE, Math.floor(total / 20));
+
+      while (offset < total) {
+        offset = Math.min(total, offset + step);
+        updateProgress(offset, total, startTime);
+        await new Promise(r => setTimeout(r, 60));
+      }
+
+      hideProgressCard();
+      addFileToLog(file, file.name, 'sent');
+      showToast(`"${file.name}" の送信動作テスト完了！`, 'success');
+
+      if (broadcastChannel) {
+        broadcastChannel.postMessage({
+          type: 'demo-file',
+          fileName: file.name,
+          fileSize: file.size,
+          senderId: peerIdDisplay.textContent
+        });
+      }
+    }
+
+    async function simulateFileReceive(fileName = "Sample_Image.jpg", fileSize = 2450000) {
+      showProgressCard(`受信中 (デモ): ${fileName}`);
+      const startTime = Date.now();
+      let offset = 0;
+      const step = Math.max(CHUNK_SIZE, Math.floor(fileSize / 20));
+
+      while (offset < fileSize) {
+        offset = Math.min(fileSize, offset + step);
+        updateProgress(offset, fileSize, startTime);
+        await new Promise(r => setTimeout(r, 60));
+      }
+
+      const dummyBlob = new Blob(["Demo File Content"], { type: "text/plain" });
+      hideProgressCard();
+      addFileToLog(dummyBlob, fileName, 'received');
+      showToast(`ファイル "${fileName}" の受信テスト完了！`, 'success');
+    }
+
+    async function sendFileToConnection(file, conn) {
+      const meta = {
+        name: file.name,
+        size: file.size,
+        mimeType: file.type || 'application/octet-stream'
+      };
+
+      // Notify recipient file transfer starting
+      conn.send({ type: 'file-start', meta: meta });
+
+      showProgressCard(`送信中: ${file.name}`);
+      const startTime = Date.now();
+      let offset = 0;
+
+      // Read file in ArrayBuffer chunks
+      while (offset < file.size) {
+        const slice = file.slice(offset, offset + CHUNK_SIZE);
+        const buffer = await slice.arrayBuffer();
+
+        conn.send({
+          type: 'file-chunk',
+          chunk: buffer
+        });
+
+        offset += buffer.byteLength;
+        updateProgress(offset, file.size, startTime);
+
+        // Yield to browser event loop to avoid UI freeze & buffer overflow
+        if (offset % (CHUNK_SIZE * 8) === 0) {
+          await new Promise(r => setTimeout(r, 10));
+        }
+      }
+
+      hideProgressCard();
+      addFileToLog(file, file.name, 'sent');
+      showToast(`"${file.name}" の送信が完了しました`, 'success');
+    }
+
+    function sendText() {
+      const text = textInput.value.trim();
+      if (!text) return;
+
+      if (isDemoMode) {
+        addTextToLog(text, 'sent');
+        textInput.value = '';
+        showToast('テキストを送信しました (デモ)', 'success');
+
+        if (broadcastChannel) {
+          broadcastChannel.postMessage({
+            type: 'text',
+            content: text,
+            senderId: peerIdDisplay.textContent
+          });
+        }
+        return;
+      }
+
+      const connections = Object.values(activeConnections);
+      if (connections.length === 0) {
+        showToast('送信先端末が接続されていません。QRコードを読み取ってください。', 'error');
+        return;
+      }
+
+      connections.forEach(conn => {
+        conn.send({ type: 'text', content: text });
+      });
+
+      addTextToLog(text, 'sent');
+      textInput.value = '';
+      showToast('テキストを送信しました', 'success');
+    }
+
+    function addTextToLog(text, direction) {
+      hideEmptyState();
+      const isSent = direction === 'sent';
+      const isUrl = isValidUrl(text);
+
+      const div = document.createElement('div');
+      div.className = `p-3.5 rounded-xl border flex flex-col gap-1 text-xs ${
+        isSent ? 'bg-brand-950/40 border-brand-800/40' : 'bg-slate-800/80 border-slate-700/80'
+      }`;
+
+      const iconClass = isSent ? 'fa-paper-plane text-brand-400' : 'fa-download text-emerald-400';
+      const label = isSent ? '送信済みテキスト' : '受信済みテキスト';
+
+      div.innerHTML = `
+        <div class="flex items-center justify-between text-[11px] text-slate-400 mb-1">
+          <span class="flex items-center gap-1.5 font-medium ${isSent ? 'text-brand-300' : 'text-emerald-300'}">
+            <i class="fa-solid ${iconClass}"></i> ${label}
+          </span>
+          <span class="font-mono text-[10px] text-slate-500">${new Date().toLocaleTimeString()}</span>
+        </div>
+        <div class="text-slate-200 font-sans break-words ${isUrl ? 'text-brand-300 underline font-mono' : ''}">
+          ${isUrl ? `<a href="${escapeHtml(text)}" target="_blank" rel="noopener noreferrer">${escapeHtml(text)}</a>` : escapeHtml(text)}
+        </div>
+        <div class="flex justify-end mt-1">
+          <button onclick="copyToClipboard('${escapeHtml(text).replace(/'/g, "\\'")}')" class="text-[10px] text-slate-400 hover:text-white transition flex items-center gap-1 px-2 py-1 rounded bg-slate-900/50">
+            <i class="fa-regular fa-copy"></i> コピー
+          </button>
+        </div>
+      `;
+
+      transferList.prepend(div);
+    }
+
+    function addFileToLog(blobOrFile, fileName, direction) {
+      hideEmptyState();
+      const isSent = direction === 'sent';
+      const fileSizeFormatted = formatBytes(blobOrFile.size);
+      const url = URL.createObjectURL(blobOrFile);
+
+      const div = document.createElement('div');
+      div.className = `p-3.5 rounded-xl border flex items-center justify-between gap-3 text-xs ${
+        isSent ? 'bg-slate-900/60 border-slate-800' : 'bg-emerald-950/20 border-emerald-800/30'
+      }`;
+
+      const iconClass = isSent ? 'fa-file-export text-brand-400' : 'fa-file-arrow-down text-emerald-400';
+
+      div.innerHTML = `
+        <div class="flex items-center gap-3 overflow-hidden">
+          <div class="w-10 h-10 rounded-xl ${isSent ? 'bg-brand-500/10 text-brand-400' : 'bg-emerald-500/10 text-emerald-400'} flex items-center justify-center text-lg shrink-0">
+            <i class="fa-solid ${getFileIcon(fileName)}"></i>
+          </div>
+          <div class="overflow-hidden">
+            <div class="font-semibold text-slate-200 truncate">${escapeHtml(fileName)}</div>
+            <div class="text-[10px] text-slate-400 flex items-center gap-2 mt-0.5">
+              <span>${fileSizeFormatted}</span>
+              <span>•</span>
+              <span class="${isSent ? 'text-brand-300' : 'text-emerald-300'} font-medium">${isSent ? '送信完了' : '受信完了'}</span>
+            </div>
+          </div>
+        </div>
+
+        <a href="${url}" download="${escapeHtml(fileName)}" class="px-3 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-xs font-medium transition flex items-center gap-1.5 shrink-0 shadow-md shadow-brand-600/20">
+          <i class="fa-solid fa-download"></i> 保存
+        </a>
+      `;
+
+      transferList.prepend(div);
+    }
+
+    function setupEventListeners() {
+      // Passcode Auth Event Listener
+      const passcodeForm = document.getElementById('passcode-form');
+      const passcodeInput = document.getElementById('passcode-input');
+      const passcodeError = document.getElementById('passcode-error');
+
+      if (passcodeForm) {
+        passcodeForm.addEventListener('submit', (e) => {
+          e.preventDefault();
+          if (passcodeInput.value === REQUIRED_PASSCODE) {
+            passcodeError.classList.add('hidden');
+            unlockApp();
+            showToast('認証に成功しました！', 'success');
+          } else {
+            passcodeError.classList.remove('hidden');
+            passcodeInput.value = '';
+            passcodeInput.focus();
+            showToast('パスコードが正しくありません', 'error');
+          }
+        });
+      }
+
+      // Drag & Drop
+      dropZone.addEventListener('click', () => fileInput.click());
+      
+      fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+          sendFiles(e.target.files);
+          fileInput.value = '';
+        }
+      });
+
+      ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropZone.classList.add('border-brand-500', 'bg-brand-500/10');
+        }, false);
+      });
+
+      ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dropZone.classList.remove('border-brand-500', 'bg-brand-500/10');
+        }, false);
+      });
+
+      dropZone.addEventListener('drop', (e) => {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        if (files.length > 0) {
+          sendFiles(files);
+        }
+      });
+
+      // Send Text
+      btnSendText.addEventListener('click', sendText);
+      textInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          sendText();
+        }
+      });
+
+      // Manual Connect
+      btnConnectPeer.addEventListener('click', () => {
+        const id = targetPeerInput.value.trim();
+        if (id) {
+          connectToPeer(id);
+        }
+      });
+
+      // Copy Link
+      btnCopyLink.addEventListener('click', () => {
+        const id = isDemoMode ? peerIdDisplay.textContent : (peer ? peer.id : '');
+        if (!id) return;
+        const url = getShareableUrl(id);
+        copyToClipboard(url);
+        showToast('接続URLをクリップボードにコピーしました！', 'success');
+      });
+
+      // Simulation Button
+      if (btnSimulateReceive) {
+        btnSimulateReceive.addEventListener('click', () => {
+          simulateFileReceive("Received_Document.pdf", 1850000);
+        });
+      }
+
+      // Clear History
+      btnClearHistory.addEventListener('click', () => {
+        transferList.innerHTML = '';
+        transferList.appendChild(emptyState);
+        emptyState.classList.remove('hidden');
+        showToast('履歴をクリアしました', 'info');
+      });
+    }
+
+    function showProgressCard(title) {
+      progressTitle.textContent = title;
+      progressPercent.textContent = '0%';
+      progressBar.style.width = '0%';
+      progressSpeed.textContent = '0 KB/s';
+      progressTransferred.textContent = '0 MB';
+      progressCard.classList.remove('hidden');
+    }
+
+    function updateProgress(transferred, total, startTime) {
+      const percent = Math.min(100, Math.round((transferred / total) * 100));
+      progressBar.style.width = `${percent}%`;
+      progressPercent.textContent = `${percent}%`;
+
+      const elapsedSeconds = (Date.now() - startTime) / 1000;
+      if (elapsedSeconds > 0) {
+        const speedBytesPerSec = transferred / elapsedSeconds;
+        progressSpeed.textContent = `${formatBytes(speedBytesPerSec)}/s`;
+      }
+
+      progressTransferred.textContent = `${formatBytes(transferred)} / ${formatBytes(total)}`;
+    }
+
+    function hideProgressCard() {
+      setTimeout(() => {
+        progressCard.classList.add('hidden');
+      }, 500);
+    }
+
+    function hideEmptyState() {
+      emptyState.classList.add('hidden');
+    }
+
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function getFileIcon(filename) {
+      const ext = filename.split('.').pop().toLowerCase();
+      if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext)) return 'fa-file-image';
+      if (['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) return 'fa-file-video';
+      if (['mp3', 'wav', 'ogg', 'm4a'].includes(ext)) return 'fa-file-audio';
+      if (['pdf'].includes(ext)) return 'fa-file-pdf';
+      if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'fa-file-zipper';
+      if (['txt', 'md', 'json', 'js', 'html', 'css'].includes(ext)) return 'fa-file-code';
+      return 'fa-file';
+    }
+
+    function isValidUrl(string) {
+      try {
+        new URL(string);
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function copyToClipboard(text) {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toast-container');
+      const toast = document.createElement('div');
+      
+      const typeStyles = {
+        success: 'bg-emerald-900/90 border-emerald-500/50 text-emerald-100',
+        error: 'bg-rose-900/90 border-rose-500/50 text-rose-100',
+        info: 'bg-slate-800/90 border-brand-500/50 text-slate-100'
+      };
+
+      const typeIcons = {
+        success: 'fa-circle-check text-emerald-400',
+        error: 'fa-circle-exclamation text-rose-400',
+        info: 'fa-circle-info text-brand-400'
+      };
+
+      toast.className = `px-4 py-3 rounded-xl border backdrop-blur-md shadow-2xl text-xs font-medium flex items-center gap-2.5 transition-all duration-300 pointer-events-auto transform translate-y-2 opacity-0 ${typeStyles[type]}`;
+      toast.innerHTML = `
+        <i class="fa-solid ${typeIcons[type]} text-base"></i>
+        <span>${escapeHtml(message)}</span>
+      `;
+
+      container.appendChild(toast);
+
+      // Animate in
+      requestAnimationFrame(() => {
+        toast.classList.remove('translate-y-2', 'opacity-0');
+      });
+
+      // Auto remove
+      setTimeout(() => {
+        toast.classList.add('opacity-0', 'translate-y-2');
+        setTimeout(() => toast.remove(), 300);
+      }, 3500);
+    }
+  </script>
+</body>
+</html>
